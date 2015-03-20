@@ -26,6 +26,6 @@
   <?define UpgradeGuid="$(var.UpgradeGuid32)" ?>
   <?endif?>
   
-  <?define CRT="$(env.CommonProgramFiles)\Merge Modules\Microsoft_VC100_CRT_$(var.Platform).msm" ?>
+  <?define CRT="$(env.CommonProgramFiles)\Merge Modules\Microsoft_VC110_CRT_$(var.Platform).msm" ?>
   
 </Include>
