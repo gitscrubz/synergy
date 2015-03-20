@@ -254,12 +254,18 @@ class InternalCommands:
 	gmockDir = 'gmock-1.6.0'
 
 	win32_generators = {
-		1 : Generator('Visual Studio 10'),
-		2 : Generator('Visual Studio 10 Win64'),
-		3 : Generator('Visual Studio 9 2008'),
-		4 : Generator('Visual Studio 9 2008 Win64'),
-		5 : Generator('Visual Studio 8 2005'),
-		6 : Generator('Visual Studio 8 2005 Win64')
+		1 : Generator('Visual Studio 12'),
+		2 : Generator('Visual Studio 12 Win64'),
+		3 : Generator('Visual Studio 11'),
+		4 : Generator('Visual Studio 11 Win64'),
+		5 : Generator('Visual Studio 10'),
+		6 : Generator('Visual Studio 10 Win64'),
+		7 : Generator('Visual Studio 10'),
+		8 : Generator('Visual Studio 10 Win64'),
+		9 : Generator('Visual Studio 9 2008'),
+		10: Generator('Visual Studio 9 2008 Win64'),
+		11: Generator('Visual Studio 8 2005'),
+		12: Generator('Visual Studio 8 2005 Win64')
 	}
 
 	unix_generators = {
@@ -463,6 +469,12 @@ class InternalCommands:
 
 		if generator.cmakeName.find('Eclipse') != -1:
 			self.fixCmakeEclipseBug()
+
+		# only on osx 10.9 mavericks.
+		# manually change .xcodeproj to add code sign for
+		# synmacph project and specify its info.plist
+		if self.macSdk == "10.9" and generator.cmakeName.find('Xcode') != -1:
+			self.fixXcodeProject(target)
 			
 		if err != 0:
 			raise Exception('CMake encountered error: ' + str(err))
@@ -564,6 +576,59 @@ class InternalCommands:
 		file.write(content)
 		file.truncate()
 		file.close()
+
+	def fixXcodeProject(self, target):
+		print "Fixing Xcode project..."
+		
+		insertContent = (
+			"CODE_SIGN_IDENTITY = '%s';\n"
+			"INFOPLIST_FILE = %s/src/cmd/synmacph/Info.plist;\n") % (
+			self.macIdentity,
+			os.getcwd()
+		)
+		
+		dir = self.getBuildDir(target)
+		file = open(dir + '/synergy.xcodeproj/project.pbxproj', 'r+')
+		contents = file.readlines()
+		
+		buildConfigurationsFound = None
+		releaseConfigRefFound = None
+		releaseBuildSettingsFound = None
+		fixed = None
+		releaseConfigRef = "";
+		
+		for line in contents:
+			if buildConfigurationsFound:
+				matchObj = re.search(r'\s*(.*)\s*\/\*\s*Release\s*\*\/,', line, re.I)
+				if matchObj:
+					releaseConfigRef = matchObj.group(1)
+					releaseConfigRefFound = True
+					break
+			elif buildConfigurationsFound == None:
+				if 'PBXNativeTarget "synmacph" */ = {' in line:
+					buildConfigurationsFound = True
+		
+		if not releaseConfigRefFound:
+			raise Exception("Release config ref not found.")
+		
+		for n, line in enumerate(contents):
+			if releaseBuildSettingsFound == None:
+				if releaseConfigRef + '/* Release */ = {' in line:
+					releaseBuildSettingsFound = True
+			elif fixed == None:
+				if 'buildSettings = {' in line:
+					contents[n] = line + insertContent
+					fixed = True
+		
+		if not fixed:
+			raise Exception("Xcode project was not fixed.")
+		
+		file.seek(0)
+		for line in contents:
+			file.write(line)
+		file.truncate()
+		file.close()
+		return
 				
 	def persist_cmake(self):
 		# even though we're running `cmake --version`, we're only doing this for the 0 return
@@ -715,6 +780,49 @@ class InternalCommands:
 				for target in targets:
 					self.macPostMake(target)
 
+				self.fixQtFrameworksLayout()
+
+	def symlink(self, source, target):
+		if not os.path.exists(target):
+			os.symlink(source, target)
+ 
+	def move(self, source, target):
+		if os.path.exists(source):
+			shutil.move(source, target)
+
+	def fixQtFrameworksLayout(self):
+		# reorganize Qt frameworks layout on Mac 10.9.5 or later
+		# http://goo.gl/BFnQ8l
+		# QtCore example:
+		# 	QtCore.framework/
+		# 		QtCore    -> Versions/Current/QtCore
+		# 		Resources -> Versions/Current/Resources
+		# 		Versions/
+		# 			Current -> 5
+		# 			5/
+		# 				QtCore
+		# 				Resources/
+		# 					Info.plist
+		dir = self.getGenerator().binDir
+		target = dir + "/Synergy.app/Contents/Frameworks"
+		(major, minor) = self.getMacVersion()
+		if major == 10:
+			if minor >= 9:
+				for root, dirs, files in os.walk(target):
+					for dir in dirs:
+						if dir.startswith("Qt"):
+							self.try_chdir(target + "/" + dir +"/Versions")
+							self.symlink("5", "Current")
+							self.move("../Resources", "5")
+							self.restore_chdir()
+
+							self.try_chdir(target + "/" + dir)
+							dot = dir.find('.')
+							frameworkName = dir[:dot]
+							self.symlink("Versions/Current/" + frameworkName, frameworkName)
+							self.symlink("Versions/Current/Resources", "Resources")
+							self.restore_chdir()
+
 	def macPostMake(self, target):
 
 		dir = self.getGenerator().binDir
@@ -729,25 +837,53 @@ class InternalCommands:
 			shutil.copy(targetDir + "/synergys", bundleBinDir)
 			shutil.copy(targetDir + "/syntool", bundleBinDir)
 
+			if self.macSdk == "10.9":
+				launchServicesDir = dir + "/Synergy.app/Contents/Library/LaunchServices/"
+				if not os.path.exists(launchServicesDir):
+					os.makedirs(launchServicesDir)
+				shutil.copy(targetDir + "/synmacph", launchServicesDir)
+
 		if self.enableMakeGui:
-
-			self.loadConfig()
-			if not self.macIdentity:
-				raise Exception("run config with --mac-identity")
-
 			# use qt to copy libs to bundle so no dependencies are needed. do not create a
 			# dmg at this point, since we need to sign it first, and then create our own
 			# after signing (so that qt does not affect the signed app bundle).
-			bin = "macdeployqt Synergy.app -verbose=2 -codesign='" + self.macIdentity + "'"
+			bin = "macdeployqt Synergy.app -verbose=2"
 			self.try_chdir(dir)
 			err = os.system(bin)
 			self.restore_chdir()
 	
 			if err != 0:
 				raise Exception(bin + " failed with error: " + str(err))
+			
+			(qMajor, qMinor, qRev) = self.getQmakeVersion()
+			if qMajor <= 4:
+				frameworkRootDir = "/Library/Frameworks"
+			else:
+				# TODO: auto-detect, qt can now be installed anywhere.
+				frameworkRootDir = "/Developer/Qt5.2.1/5.2.1/clang_64/lib"
+			
+			target = dir + "/Synergy.app/Contents/Frameworks"
+
+			# copy the missing Info.plist files for the frameworks.
+			for root, dirs, files in os.walk(target):
+				for dir in dirs:
+					if dir.startswith("Qt"):
+						shutil.copy(
+							frameworkRootDir + "/" + dir + "/Contents/Info.plist",
+							target + "/" + dir + "/Resources/")
 
 	def signmac(self):
-		print "signmac is now obsolete"
+		self.loadConfig()
+		if not self.macIdentity:
+			raise Exception("run config with --mac-identity")
+		
+		self.try_chdir("bin")
+		err = os.system(
+			'codesign --deep -fs "' + self.macIdentity + '" Synergy.app')
+		self.restore_chdir()
+
+		if err != 0:
+			raise Exception("codesign failed with error: " + str(err))
 	
 	def signwin(self, pfx, pwdFile, dist):
 		generator = self.getGeneratorFromConfig().cmakeName
@@ -809,7 +945,7 @@ class InternalCommands:
 
 		if generator.startswith('Visual Studio'):
 			# special case for version 10, use new /target:clean
-			if generator.startswith('Visual Studio 10'):
+			if generator.startswith('Visual Studio 10') or generator.startswith('Visual Studio 11') or generator.startswith('Visual Studio 12'):
 				for target in targets:
 					self.run_vcbuild(generator, target, self.sln_filepath(), '/target:clean')
 				
@@ -1605,6 +1741,10 @@ class InternalCommands:
 			value,type = _winreg.QueryValueEx(key, '9.0')
 		elif generator.startswith('Visual Studio 10'):
 			value,type = _winreg.QueryValueEx(key, '10.0')
+		elif generator.startswith('Visual Studio 11'):
+			value,type = _winreg.QueryValueEx(key, '11.0')
+		elif generator.startswith('Visual Studio 12'):
+			value,type = _winreg.QueryValueEx(key, '12.0')
 		else:
 			raise Exception('Cannot determine vcvarsall.bat location for: ' + generator)
 		
@@ -1647,7 +1787,7 @@ class InternalCommands:
 		else:
 			config = 'Debug'
 				
-		if generator.startswith('Visual Studio 10'):
+		if generator.startswith('Visual Studio 10') or generator.startswith('Visual Studio 11') or generator.startswith('Visual Studio 12'):
 			cmd = ('@echo off\n'
 				'call "%s" %s \n'
 				'cd "%s"\n'
