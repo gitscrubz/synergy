@@ -310,6 +310,8 @@ else() # not-unix
 		/DWIN32
 		/D_WINDOWS
 		/D_CRT_SECURE_NO_WARNINGS
+		/D_ALLOW_KEYWORD_MACROS
+                /D_XKEYCHECK_H
 		/DVERSION=\"${VERSION}\"
 	)
 	
