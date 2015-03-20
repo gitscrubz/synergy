@@ -865,8 +865,7 @@ MSWindowsScreen::destroyClass(ATOM windowClass) const
 HWND
 MSWindowsScreen::createWindow(ATOM windowClass, const char* name) const
 {
-	HWND window = CreateWindowEx(WS_EX_TOPMOST |
-									WS_EX_TRANSPARENT |
+	HWND window = CreateWindowEx(WS_EX_TRANSPARENT |
 									WS_EX_TOOLWINDOW,
 								reinterpret_cast<LPCTSTR>(windowClass),
 								name,
@@ -886,7 +885,6 @@ HWND
 MSWindowsScreen::createDropWindow(ATOM windowClass, const char* name) const
 {
 	HWND window = CreateWindowEx(
-		WS_EX_TOPMOST |
 		WS_EX_TRANSPARENT |
 		WS_EX_ACCEPTFILES,
 		reinterpret_cast<LPCTSTR>(m_class),
